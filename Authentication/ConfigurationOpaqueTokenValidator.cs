@@ -1,19 +1,20 @@
 namespace WebApiWeatherDemoAuthnAutnzSwaggerUI.Authentication;
 
 /// <summary>
-/// Configuration-based opaque token validator.
-/// Reads valid tokens from appsettings.json.
+/// Validates opaque bearer tokens from appsettings.json configuration.
 /// </summary>
 public class ConfigurationOpaqueTokenValidator : IOpaqueTokenValidator
 {
    private readonly Dictionary<string, TokenConfiguration> _validTokens;
 
-    public ConfigurationOpaqueTokenValidator(IConfiguration configuration) =>
-       // Read tokens from configuration
-       _validTokens = configuration.GetSection(BearerTokenOptions.SectionName)
-           .Get<Dictionary<string, TokenConfiguration>>() ?? [];
+   public ConfigurationOpaqueTokenValidator(IConfiguration configuration)
+   {
+      // Load token configurations from appsettings.json
+      _validTokens = configuration.GetSection(BearerTokenOptions.SectionName)
+          .Get<Dictionary<string, TokenConfiguration>>() ?? [];
+   }
 
-    public Task<bool> ValidateTokenAsync(string token)
+   public Task<bool> ValidateTokenAsync(string token)
    {
       return Task.FromResult(_validTokens.ContainsKey(token));
    }

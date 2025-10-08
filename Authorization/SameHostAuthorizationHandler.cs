@@ -5,13 +5,21 @@ using System.Net.NetworkInformation;
 
 namespace WebApiWeatherDemoAuthnAutnzSwaggerUI.Authorization;
 
-// Requirement that the request must originate from the same host (this machine).
+/// <summary>
+/// Authorization requirement that the request must originate from the same machine.
+/// </summary>
 public sealed class SameHostRequirement : IAuthorizationRequirement { }
 
+/// <summary>
+/// Validates that requests come from the same machine (loopback, local NIC IPs, or configured additional IPs).
+/// Useful for web app + API on same server without requiring bearer tokens.
+/// </summary>
 public sealed class SameHostAuthorizationHandler : AuthorizationHandler<SameHostRequirement>
 {
    private readonly IHttpContextAccessor _httpContextAccessor;
    private readonly ILogger<SameHostAuthorizationHandler> _logger;
+   
+   // Thread-safe lazy initialization of local IP addresses
    private static readonly object _initLock = new();
    private static volatile bool _initialized;
    private static HashSet<IPAddress> _localAddresses = new(IPAddressComparer.Instance);
@@ -24,6 +32,7 @@ public sealed class SameHostAuthorizationHandler : AuthorizationHandler<SameHost
       _httpContextAccessor = httpContextAccessor;
       _logger = logger;
 
+      // Initialize local IP addresses once at startup
       EnsureInitialized(options.Value, _logger);
    }
 
@@ -44,6 +53,7 @@ public sealed class SameHostAuthorizationHandler : AuthorizationHandler<SameHost
          return Task.CompletedTask;
       }
 
+      // Check if remote IP is loopback or in local addresses set
       if (IPAddress.IsLoopback(remote) || _localAddresses.Contains(remote))
       {
          _logger.LogDebug("Same-host access granted from {RemoteIp}", remote);
@@ -57,9 +67,14 @@ public sealed class SameHostAuthorizationHandler : AuthorizationHandler<SameHost
       return Task.CompletedTask;
    }
 
+   /// <summary>
+   /// Discovers all local IP addresses (network interfaces + configured additional IPs).
+   /// Thread-safe singleton initialization.
+   /// </summary>
    private static void EnsureInitialized(SameHostPolicyOptions opts, ILogger logger)
    {
       if (_initialized) return;
+      
       lock (_initLock)
       {
          if (_initialized) return;
@@ -68,9 +83,11 @@ public sealed class SameHostAuthorizationHandler : AuthorizationHandler<SameHost
          {
             var addresses = new HashSet<IPAddress>(IPAddressComparer.Instance);
 
+            // Discover all IP addresses from active network interfaces
             foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
             {
                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+               
                var ipProps = ni.GetIPProperties();
                foreach (var ua in ipProps.UnicastAddresses)
                {
@@ -78,19 +95,18 @@ public sealed class SameHostAuthorizationHandler : AuthorizationHandler<SameHost
                   if (addr != null)
                   {
                      addresses.Add(addr);
-                     logger.LogInformation("Added local address {Address} from network interface {Name}", addr, ni.Name);
-                     _ = 0; // no-op to keep block non-empty for tool parsing
+                     logger.LogInformation("Added local address {Address} from NIC {Name}", addr, ni.Name);
                   }
                }
             }
 
-            // Always include loopbacks
+            // Always include loopback addresses
             addresses.Add(IPAddress.Loopback);
             logger.LogInformation("Added IPAddress.Loopback {Loopback}", IPAddress.Loopback);
             addresses.Add(IPAddress.IPv6Loopback);
             logger.LogInformation("Added IPAddress.IPv6Loopback {IPv6Loopback}", IPAddress.IPv6Loopback);
 
-            // Include configured additional same-host IPs (e.g., hairpin NAT / EIP)
+            // Add configured additional IPs (e.g., for hairpin NAT scenarios)
             if (opts.AdditionalSameHostIPs is { Length: > 0 })
             {
                foreach (var ipText in opts.AdditionalSameHostIPs)
@@ -109,18 +125,21 @@ public sealed class SameHostAuthorizationHandler : AuthorizationHandler<SameHost
          }
          catch
          {
-            // If enumeration fails, fall back to loopbacks only
+            // Fallback to loopbacks only if enumeration fails
             _localAddresses = new HashSet<IPAddress>(IPAddressComparer.Instance)
             {
                IPAddress.Loopback,
                IPAddress.IPv6Loopback
             };
-            logger.LogWarning("Enumeration failed, fall back to loopbacks only. IPAddress.Loopback {Loopback} and IPAddress.IPv6Loopback {IPv6Loopback}", IPAddress.Loopback, IPAddress.IPv6Loopback);
+            logger.LogWarning("Network enumeration failed, using loopback addresses only");
             _initialized = true;
          }
       }
    }
 
+   /// <summary>
+   /// Normalizes IPv6-mapped IPv4 addresses to IPv4 for consistent comparison.
+   /// </summary>
    private static IPAddress? Normalize(IPAddress? ip)
    {
       if (ip == null) return null;
@@ -128,6 +147,9 @@ public sealed class SameHostAuthorizationHandler : AuthorizationHandler<SameHost
       return ip;
    }
 
+   /// <summary>
+   /// Custom equality comparer for IPAddress in HashSet.
+   /// </summary>
    private sealed class IPAddressComparer : IEqualityComparer<IPAddress>
    {
       public static readonly IPAddressComparer Instance = new();

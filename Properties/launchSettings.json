@@ -24,8 +24,7 @@
       "IIS": {
          "commandName": "IIS",
          "launchBrowser": false,
-         "x launchUrl": "https://example-local.com/api2/openapi/v1.json",
-         "launchUrl": "https://example-local.com/api2/swagger",
+         "launchUrl": "https://example-local.com/api/swagger",
          "environmentVariables": {
             "ASPNETCORE_ENVIRONMENT": "Development"
          }
@@ -35,7 +34,7 @@
       "windowsAuthentication": false,
       "anonymousAuthentication": true,
       "iis": {
-         "applicationUrl": "https://example-local.com/api2/",
+         "applicationUrl": "https://example-local.com/api/",
          "sslPort": 0
       }
    }

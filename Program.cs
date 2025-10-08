@@ -6,62 +6,67 @@ using WebApiWeatherDemoAuthnAutnzSwaggerUI.Endpoints;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Configure Serilog for structured logging (reads from appsettings.json)
 builder.Host.UseSerilog((context, configuration) =>
    configuration.ReadFrom.Configuration(context.Configuration));
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+// Add OpenAPI support for API documentation
 builder.Services.AddOpenApi();
 
-// Add HttpContextAccessor for authorization handlers
+// Required for authorization handlers to access HTTP request information
 builder.Services.AddHttpContextAccessor();
 
-// Options for SameHost policy (AdditionalSameHostIPs)
+// Bind SameHostPolicy configuration from appsettings.json
 builder.Services.Configure<SameHostPolicyOptions>(
     builder.Configuration.GetSection("Authorization:SameHostPolicy"));
 
-// Register token validator (reads from appsettings.json)
+// Register our custom token validator (reads tokens from appsettings.json)
 builder.Services.AddSingleton<IOpaqueTokenValidator, ConfigurationOpaqueTokenValidator>();
 
-// Add authentication with custom opaque token handler
+// Register custom authentication scheme for opaque bearer tokens
 builder.Services.AddAuthentication("OpaqueToken")
     .AddScheme<OpaqueTokenAuthenticationOptions, OpaqueTokenAuthenticationHandler>(
-        "OpaqueToken", 
+        "OpaqueToken",
         options => { });
 
-// Add authorization with custom policies
+// Configure authorization policies
 builder.Services.AddAuthorizationBuilder()
+    // Basic authentication - any valid token
     .AddPolicy("BearerTokenPolicy", policy =>
     {
-        policy.AuthenticationSchemes.Add("OpaqueToken");
-        policy.RequireAuthenticatedUser();
+       policy.AuthenticationSchemes.Add("OpaqueToken");
+       policy.RequireAuthenticatedUser();
     })
+    // Same-host only - request must come from same machine (no token required)
     .AddPolicy("SameHostPolicy", policy =>
     {
-        policy.Requirements.Add(new SameHostRequirement());
+       policy.Requirements.Add(new SameHostRequirement());
     })
+    // Partner1 - requires specific role + IP whitelist
     .AddPolicy("Partner1Policy", policy =>
     {
-        policy.AuthenticationSchemes.Add("OpaqueToken");
-        policy.RequireAuthenticatedUser();
-        policy.RequireRole("Partner1");
-        policy.Requirements.Add(new AllowedIpRequirement());
+       policy.AuthenticationSchemes.Add("OpaqueToken");
+       policy.RequireAuthenticatedUser();
+       policy.RequireRole("Partner1");
+       policy.Requirements.Add(new AllowedIpRequirement());
     })
+    // DataReader - requires role (no IP restriction)
     .AddPolicy("DataReaderPolicy", policy =>
     {
-        policy.AuthenticationSchemes.Add("OpaqueToken");
-        policy.RequireAuthenticatedUser();
-        policy.RequireRole("DataReader");
+       policy.AuthenticationSchemes.Add("OpaqueToken");
+       policy.RequireAuthenticatedUser();
+       policy.RequireRole("DataReader");
     })
+    // DataWriter - requires role + IP whitelist
     .AddPolicy("DataWriterPolicy", policy =>
     {
-        policy.AuthenticationSchemes.Add("OpaqueToken");
-        policy.RequireAuthenticatedUser();
-        policy.RequireRole("DataWriter");
-        policy.Requirements.Add(new AllowedIpRequirement());
+       policy.AuthenticationSchemes.Add("OpaqueToken");
+       policy.RequireAuthenticatedUser();
+       policy.RequireRole("DataWriter");
+       policy.Requirements.Add(new AllowedIpRequirement());
     });
 
-// Register authorization handlers
+// Register custom authorization handlers
 builder.Services.AddSingleton<IAuthorizationHandler, SameHostAuthorizationHandler>();
 builder.Services.AddSingleton<IAuthorizationHandler, AllowedIpAuthorizationHandler>();
 
@@ -70,29 +75,36 @@ var app = builder.Build();
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
 logger.LogInformation("Starting application in {Environment}", app.Environment.EnvironmentName);
 
-// Optional: log request information using Serilog middleware
+// Log HTTP requests with Serilog
 app.UseSerilogRequestLogging();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+// Enable Swagger UI in development
+if (app.Environment.IsDevelopment()) // To get it on prod server change web config env to Development
 {
    app.MapOpenApi();
-   app.UseSwaggerUI(); // (options => options.SwaggerEndpoint("/openapi/v1.json", "v1")); // No need to set as it is the default.
-   app.MapGet("/swagger/v1/swagger.json", (HttpContext ctx) => Results.Redirect($"{ctx.Request.PathBase}/openapi/v1.json")); // Compatibility shim for Swagger UI default discovery path: /swagger/v1/swagger.json -> /openapi/v1.json (preserve PathBase)
+   app.UseSwaggerUI();
+
+   // Compatibility shim: redirect Swagger UI's default discovery path to OpenAPI endpoint
+   // Swagger UI expects /swagger/v1/swagger.json but .NET 10 uses /openapi/v1.json
+   app.MapGet("/swagger/v1/swagger.json", (HttpContext ctx) =>
+      Results.Redirect($"{ctx.Request.PathBase}/openapi/v1.json"))
+      .RequireAuthorization("SameHostPolicy") // and add your development pc to allowed IPs, not needed when using only locally
+   ;
 }
 
 app.UseHttpsRedirection();
 
-// Add authentication and authorization middleware
+// Enable authentication and authorization middleware (order matters!)
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapPublicWeatherEndpoints(); // Should be avaliable to anonymous users, i.e. not authenticated.
-app.MapPrivateWeatherEndpoints(); // Should only be available for authenticated users.
-app.MapPrivateClient1WeatherEndpoints(); // Should only be available for authenticated users with Partner1 role.
-app.MapSameHostWeatherEndpoints(); // Should only be available for web application(s) running on the same host
+// Map endpoint groups with different security requirements
+app.MapPublicWeatherEndpoints();         // No authentication required
+app.MapPrivateWeatherEndpoints();        // Requires valid bearer token
+app.MapPrivateClient1WeatherEndpoints(); // Requires Partner1 role + IP whitelist
+app.MapSameHostWeatherEndpoints();       // Only accessible from same machine
 
-// Log lifecycle events
+// Log application lifecycle events
 app.Lifetime.ApplicationStarted.Register(() =>
     logger.LogInformation("Application started and listening"));
 app.Lifetime.ApplicationStopping.Register(() =>

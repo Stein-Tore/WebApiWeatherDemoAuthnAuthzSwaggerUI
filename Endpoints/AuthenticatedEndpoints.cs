@@ -2,64 +2,45 @@
 
 public static class AuthenticatedEndpoints
 {
+   /// <summary>
+   /// Maps private endpoints requiring bearer token authentication.
+   /// </summary>
    public static void MapPrivateWeatherEndpoints(this IEndpointRouteBuilder routes)
    {
       var group = routes.MapGroup("/privateweather")
          .WithTags("Private Weather")
-         .RequireAuthorization("BearerTokenPolicy"); // Require opaque bearer token authentication
+         .RequireAuthorization("BearerTokenPolicy"); // Requires valid bearer token
 
-      _ = group.MapGet("/weatherforecast", () =>
-      {
-         var forecast = Enumerable.Range(1, 5).Select(index =>
-             new WeatherForecast
-             (
-                 DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-                 Random.Shared.Next(-20, 55),
-                 summaries[Random.Shared.Next(summaries.Length)]
-             ))
-             .ToArray();
-         return forecast;
-      })
-      .WithName("GetPrivateWeatherForecast");
+      group.MapGet("/weatherforecast", () => WeatherData.GenerateForecast())
+         .WithName("GetPrivateWeatherForecast")
+         .WithDescription("Private weather forecast - requires bearer token");
    }
 
+   /// <summary>
+   /// Maps partner-specific endpoints requiring Partner1 role and IP whitelist validation.
+   /// </summary>
    public static void MapPrivateClient1WeatherEndpoints(this IEndpointRouteBuilder routes)
    {
       var group = routes.MapGroup("/privateclient1weather")
          .WithTags("Private Client1 Weather")
-         .RequireAuthorization("Partner1Policy"); // Require Partner1 role + IP whitelist
+         .RequireAuthorization("Partner1Policy"); // Requires Partner1 role + IP whitelist
 
-      _ = group.MapGet("/weatherforecast", () =>
-      {
-         var forecast = Enumerable.Range(1, 5).Select(index =>
-             new WeatherForecast
-             (
-                 DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-                 Random.Shared.Next(-20, 55),
-                 summaries[Random.Shared.Next(summaries.Length)]
-             ))
-             .ToArray();
-         return forecast;
-      })
-      .WithName("GetPrivateClient1WeatherForecast");
+      group.MapGet("/weatherforecast", () => WeatherData.GenerateForecast())
+         .WithName("GetPrivateClient1WeatherForecast")
+         .WithDescription("Partner1 weather forecast - requires Partner1 role and IP whitelist");
 
-      // Example: GET endpoint requires DataReader role (any authenticated user with role)
-      _ = group.MapGet("/data", () =>
+      // Example: GET requires DataReader role only (no IP restriction)
+      group.MapGet("/data", () =>
          Results.Ok(new { Message = "Data for Partner1", Data = new[] { 1, 2, 3 } }))
          .WithName("GetPartner1Data")
+         .WithDescription("Get data - requires DataReader role")
          .RequireAuthorization("DataReaderPolicy");
 
-      // Example: POST endpoint requires DataWriter role + IP whitelist
-      _ = group.MapPost("/data", (object data) =>
+      // Example: POST requires DataWriter role + IP whitelist
+      group.MapPost("/data", (object data) =>
          Results.Ok(new { Message = "Data created for Partner1", ReceivedData = data }))
          .WithName("PostPartner1Data")
+         .WithDescription("Post data - requires DataWriter role and IP whitelist")
          .RequireAuthorization("DataWriterPolicy");
    }
-
-   internal record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-   {
-      public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-   }
-
-   private static readonly string[] summaries = ["Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy!!!!", "Hot", "Sweltering", "Scorching"];
 }
