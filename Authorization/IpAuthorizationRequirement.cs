@@ -88,68 +88,103 @@ public class IpAuthorizationHandler : AuthorizationHandler<IpAuthorizationRequir
        AuthorizationHandlerContext context,
        IpAuthorizationRequirement requirement)
    {
+      _logger.LogInformation("=== IP Authorization Handler Started for policy '{PolicyName}' ===", requirement.PolicyName);
+      
       var httpContext = _httpContextAccessor.HttpContext;
       if (httpContext == null)
       {
-         _logger.LogWarning("HttpContext is null in IpAuthorizationHandler");
+         _logger.LogWarning("HttpContext is null in IpAuthorizationHandler - authorization denied");
          return Task.CompletedTask;
       }
+
+      _logger.LogInformation("Request path: {Path}, Method: {Method}", 
+         httpContext.Request.Path, httpContext.Request.Method);
 
       var remoteIpAddress = httpContext.Connection.RemoteIpAddress;
       if (remoteIpAddress == null)
       {
-         _logger.LogWarning("Remote IP address is null");
+         _logger.LogWarning("Remote IP address is null - authorization denied");
          return Task.CompletedTask;
       }
+
+      _logger.LogInformation("Remote IP address (raw): {RemoteIp}, Address family: {AddressFamily}", 
+         remoteIpAddress, remoteIpAddress.AddressFamily);
 
       var remote = Normalize(remoteIpAddress);
       if (remote == null)
       {
-         _logger.LogWarning("Unable to normalize remote IP address");
+         _logger.LogWarning("Unable to normalize remote IP address {RemoteIp} - authorization denied", remoteIpAddress);
          return Task.CompletedTask;
       }
+
+      _logger.LogInformation("Remote IP address (normalized): {NormalizedRemoteIp}", remote);
 
       // Get policy configuration
       if (!_options.Policies.TryGetValue(requirement.PolicyName, out var policyConfig))
       {
-         _logger.LogWarning("IP policy '{PolicyName}' not found in configuration", requirement.PolicyName);
+         _logger.LogWarning("IP policy '{PolicyName}' not found in configuration - authorization denied. Available policies: {Policies}", 
+            requirement.PolicyName, string.Join(", ", _options.Policies.Keys));
          return Task.CompletedTask;
       }
+
+      _logger.LogInformation("Policy '{PolicyName}' configuration - IncludeSameHost: {IncludeSameHost}, ConfiguredIPs: [{AllowedIPs}]",
+         requirement.PolicyName, policyConfig.IncludeSameHost, string.Join(", ", policyConfig.AllowedIPs));
 
       var allowedIps = new HashSet<IPAddress>(IPAddressComparer.Instance);
 
       // Add same-host IPs if configured
       if (policyConfig.IncludeSameHost)
       {
+         _logger.LogInformation("Including same-host IPs for policy '{PolicyName}'. Total same-host IPs: {Count}", 
+            requirement.PolicyName, _sameHostAddresses.Count);
+         
          foreach (var ip in _sameHostAddresses)
          {
             allowedIps.Add(ip);
+            _logger.LogDebug("Added same-host IP: {Ip}", ip);
          }
-         _logger.LogDebug("Policy '{PolicyName}' includes same-host IPs", requirement.PolicyName);
+      }
+      else
+      {
+         _logger.LogInformation("Same-host IPs NOT included for policy '{PolicyName}'", requirement.PolicyName);
       }
 
       // Add specific IPs from configuration
+      _logger.LogInformation("Adding {Count} specific IPs from configuration", policyConfig.AllowedIPs.Length);
       foreach (var ipString in policyConfig.AllowedIPs)
       {
          if (IPAddress.TryParse(ipString.Trim(), out var ip))
          {
-            allowedIps.Add(Normalize(ip)!);
+            var normalized = Normalize(ip)!;
+            allowedIps.Add(normalized);
+            _logger.LogInformation("Added configured IP: {IpString} (normalized: {Normalized})", ipString, normalized);
+         }
+         else
+         {
+            _logger.LogWarning("Failed to parse configured IP: '{IpString}'", ipString);
          }
       }
 
+      _logger.LogInformation("Total allowed IPs for policy '{PolicyName}': {Count}. List: [{IpList}]",
+         requirement.PolicyName, allowedIps.Count, string.Join(", ", allowedIps));
+
       // Check if remote IP is in allowed set
+      _logger.LogInformation("Checking if remote IP {RemoteIp} is in allowed set...", remote);
+      
       if (allowedIps.Contains(remote))
       {
-         _logger.LogInformation("IP authorization granted for policy '{PolicyName}' from {RemoteIp}", 
+         _logger.LogInformation("? IP authorization GRANTED for policy '{PolicyName}' from {RemoteIp}", 
             requirement.PolicyName, remote);
          context.Succeed(requirement);
          return Task.CompletedTask;
       }
 
       // IP not allowed
-      _logger.LogWarning("IP authorization denied for policy '{PolicyName}' from {RemoteIp}. Policy includes same-host: {IncludeSameHost}, specific IPs: {AllowedIPs}",
-          requirement.PolicyName, remote, policyConfig.IncludeSameHost, string.Join(", ", policyConfig.AllowedIPs));
+      _logger.LogWarning("? IP authorization DENIED for policy '{PolicyName}' from {RemoteIp}. Remote IP not found in allowed list. Policy includes same-host: {IncludeSameHost}, specific IPs: [{AllowedIPs}], total allowed IPs: {Count}",
+          requirement.PolicyName, remote, policyConfig.IncludeSameHost, string.Join(", ", policyConfig.AllowedIPs), allowedIps.Count);
 
+      _logger.LogInformation("=== IP Authorization Handler Completed (DENIED) ===");
+      
       return Task.CompletedTask;
    }
 
@@ -181,7 +216,7 @@ public class IpAuthorizationHandler : AuthorizationHandler<IpAuthorizationRequir
                   if (addr != null)
                   {
                      addresses.Add(addr);
-                     logger.LogInformation("Detected same-host IP {Address} from NIC {Name}", addr, ni.Name);
+                     logger.LogInformation("Added same-host IP {Address} from NIC {Name}", addr, ni.Name);
                   }
                }
             }
