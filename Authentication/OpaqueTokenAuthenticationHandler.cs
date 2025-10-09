@@ -12,6 +12,7 @@ public class OpaqueTokenAuthenticationOptions : AuthenticationSchemeOptions
 /// <summary>
 /// Custom authentication handler for opaque bearer tokens.
 /// Validates tokens from Authorization header and creates claims principal with roles.
+/// Authentication only - authorization (IP restrictions, etc.) handled separately.
 /// </summary>
 public class OpaqueTokenAuthenticationHandler : AuthenticationHandler<OpaqueTokenAuthenticationOptions>
 {
@@ -29,9 +30,12 @@ public class OpaqueTokenAuthenticationHandler : AuthenticationHandler<OpaqueToke
 
    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
    {
+      Logger.LogDebug("Starting authentication for request to {Path}", Request.Path);
+
       // Extract Bearer token from Authorization header
       if (!Request.Headers.TryGetValue(AuthorizationHeaderName, out var authorizationHeaderValues))
       {
+         Logger.LogDebug("No Authorization header found for {Path}", Request.Path);
          return AuthenticateResult.NoResult();
       }
 
@@ -39,6 +43,7 @@ public class OpaqueTokenAuthenticationHandler : AuthenticationHandler<OpaqueToke
 
       if (!authorizationHeader.StartsWith(BearerPrefix, StringComparison.OrdinalIgnoreCase))
       {
+         Logger.LogDebug("Authorization header does not start with 'Bearer' for {Path}", Request.Path);
          return AuthenticateResult.NoResult();
       }
 
@@ -46,22 +51,32 @@ public class OpaqueTokenAuthenticationHandler : AuthenticationHandler<OpaqueToke
 
       if (string.IsNullOrEmpty(token))
       {
+         Logger.LogWarning("Empty token provided for {Path}", Request.Path);
          return AuthenticateResult.Fail("Invalid token format");
       }
+
+      Logger.LogDebug("Validating token for {Path}", Request.Path);
 
       // Validate token against configured tokens in appsettings.json
       var isValid = await _tokenValidator.ValidateTokenAsync(token);
       if (!isValid)
       {
+         Logger.LogWarning("Invalid token provided for {Path}", Request.Path);
          return AuthenticateResult.Fail("Invalid token");
       }
 
-      // Get token configuration (user, roles, allowed IPs)
+      // Get token configuration (user, roles)
       var tokenConfig = await _tokenValidator.GetTokenConfigurationAsync(token);
       if (tokenConfig == null || string.IsNullOrEmpty(tokenConfig.UserId))
       {
+         Logger.LogError("Unable to retrieve token configuration for valid token on {Path}", Request.Path);
          return AuthenticateResult.Fail("Unable to retrieve token configuration");
       }
+
+      Logger.LogInformation("Token validated successfully for user {UserId} with roles [{Roles}] on {Path}", 
+         tokenConfig.UserId, 
+         string.Join(", ", tokenConfig.Roles),
+         Request.Path);
 
       // Build claims for the authenticated user
       var claims = new List<Claim>
@@ -77,17 +92,12 @@ public class OpaqueTokenAuthenticationHandler : AuthenticationHandler<OpaqueToke
          claims.Add(new Claim(ClaimTypes.Role, role));
       }
 
-      // Store allowed IPs as claim for IP whitelist authorization handler
-      if (tokenConfig.AllowedIPs.Length > 0)
-      {
-         claims.Add(new Claim("allowed_ips", string.Join(",", tokenConfig.AllowedIPs)));
-      }
-
       // Create authenticated principal and ticket
       var identity = new ClaimsIdentity(claims, Scheme.Name);
       var principal = new ClaimsPrincipal(identity);
       var ticket = new AuthenticationTicket(principal, Scheme.Name);
 
+      Logger.LogDebug("Authentication successful for {UserId} on {Path}", tokenConfig.UserId, Request.Path);
       return AuthenticateResult.Success(ticket);
    }
 

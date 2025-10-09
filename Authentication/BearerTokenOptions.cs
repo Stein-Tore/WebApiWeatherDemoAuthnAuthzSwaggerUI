@@ -15,6 +15,7 @@ public class BearerTokenOptions
 
 /// <summary>
 /// Configuration for an individual token.
+/// Handles authentication only - authorization (IP, etc.) is handled separately.
 /// </summary>
 public class TokenConfiguration
 {
@@ -27,10 +28,4 @@ public class TokenConfiguration
    /// Roles assigned to this token/user.
    /// </summary>
    public string[] Roles { get; set; } = [];
-
-   /// <summary>
-   /// IP addresses allowed to use this token.
-   /// Empty array = no IP restrictions.
-   /// </summary>
-   public string[] AllowedIPs { get; set; } = [];
 }

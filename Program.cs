@@ -16,9 +16,9 @@ builder.Services.AddOpenApi();
 // Required for authorization handlers to access HTTP request information
 builder.Services.AddHttpContextAccessor();
 
-// Bind SameHostPolicy configuration from appsettings.json
-builder.Services.Configure<SameHostPolicyOptions>(
-    builder.Configuration.GetSection("Authorization:SameHostPolicy"));
+// Bind configuration options
+builder.Services.Configure<IpAuthorizationOptions>(
+    builder.Configuration.GetSection("Authorization:IpPolicies"));
 
 // Register our custom token validator (reads tokens from appsettings.json)
 builder.Services.AddSingleton<IOpaqueTokenValidator, ConfigurationOpaqueTokenValidator>();
@@ -31,65 +31,74 @@ builder.Services.AddAuthentication("OpaqueToken")
 
 // Configure authorization policies
 builder.Services.AddAuthorizationBuilder()
-    // Basic authentication - any valid token
+    // Basic authentication - any valid token (Identity only)
     .AddPolicy("BearerTokenPolicy", policy =>
     {
        policy.AuthenticationSchemes.Add("OpaqueToken");
        policy.RequireAuthenticatedUser();
     })
-    // Same-host only - request must come from same machine (no token required)
+    // Same-host only - request must come from same machine (IP only, auto-populated)
     .AddPolicy("SameHostPolicy", policy =>
     {
-       policy.Requirements.Add(new SameHostRequirement());
+       policy.Requirements.Add(new IpAuthorizationRequirement("SameHost"));
     })
-    // Partner1 - requires specific role + IP whitelist
+    // Partner1 - requires specific role + IP whitelist (Identity AND IP)
     .AddPolicy("Partner1Policy", policy =>
     {
        policy.AuthenticationSchemes.Add("OpaqueToken");
        policy.RequireAuthenticatedUser();
        policy.RequireRole("Partner1");
-       policy.Requirements.Add(new AllowedIpRequirement());
+       policy.Requirements.Add(new IpAuthorizationRequirement("Partner1"));
     })
-    // DataReader - requires role (no IP restriction)
+    // DataReader - requires role only (Identity only, no IP restriction)
     .AddPolicy("DataReaderPolicy", policy =>
     {
        policy.AuthenticationSchemes.Add("OpaqueToken");
        policy.RequireAuthenticatedUser();
        policy.RequireRole("DataReader");
     })
-    // DataWriter - requires role + IP whitelist
+    // DataWriter - requires role + IP whitelist (Identity AND IP)
     .AddPolicy("DataWriterPolicy", policy =>
     {
        policy.AuthenticationSchemes.Add("OpaqueToken");
        policy.RequireAuthenticatedUser();
        policy.RequireRole("DataWriter");
-       policy.Requirements.Add(new AllowedIpRequirement());
+       policy.Requirements.Add(new IpAuthorizationRequirement("DataWriter"));
+    })
+    // OpenAPI access - flexible based on configuration
+    .AddPolicy("OpenApiPolicy", policy =>
+    {
+       policy.Requirements.Add(new IpAuthorizationRequirement("OpenApi"));
     });
 
 // Register custom authorization handlers
-builder.Services.AddSingleton<IAuthorizationHandler, SameHostAuthorizationHandler>();
-builder.Services.AddSingleton<IAuthorizationHandler, AllowedIpAuthorizationHandler>();
+builder.Services.AddSingleton<IpAuthorizationHandler>();
+builder.Services.AddSingleton<IAuthorizationHandler>(sp => sp.GetRequiredService<IpAuthorizationHandler>());
+builder.Services.AddSingleton<IAuthorizationHandler, IpOrIdentityAuthorizationHandler>();
 
 var app = builder.Build();
 
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
+logger.LogInformation("-----------------------------");
 logger.LogInformation("Starting application in {Environment}", app.Environment.EnvironmentName);
 
 // Log HTTP requests with Serilog
 app.UseSerilogRequestLogging();
 
-// Enable Swagger UI in development
-if (app.Environment.IsDevelopment()) // To get it on prod server change web config env to Development
+// Enable Swagger UI in development or if explicitly enabled in config
+if (app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("OpenApi:Enabled"))
 {
-   app.MapOpenApi();
+   var openApiBuilder = app.MapOpenApi();
    app.UseSwaggerUI();
 
+   // Apply OpenAPI protection
+   openApiBuilder.RequireAuthorization("OpenApiPolicy");
+   logger.LogInformation("OpenAPI endpoint protected with OpenApiPolicy");
+
    // Compatibility shim: redirect Swagger UI's default discovery path to OpenAPI endpoint
-   // Swagger UI expects /swagger/v1/swagger.json but .NET 10 uses /openapi/v1.json
+   // Swagger UI expects /swagger/v1/swagger.json but .NET 9 uses /openapi/v1.json
    app.MapGet("/swagger/v1/swagger.json", (HttpContext ctx) =>
-      Results.Redirect($"{ctx.Request.PathBase}/openapi/v1.json"))
-      .RequireAuthorization("SameHostPolicy") // and add your development pc to allowed IPs, not needed when using only locally
-   ;
+      Results.Redirect($"{ctx.Request.PathBase}/openapi/v1.json"));
 }
 
 app.UseHttpsRedirection();

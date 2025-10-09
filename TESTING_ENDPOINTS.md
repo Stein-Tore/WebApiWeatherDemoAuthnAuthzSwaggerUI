@@ -1,8 +1,12 @@
 # Testing the Endpoints
 
-## Token Configuration
+## Configuration Structure
 
-Tokens are in `appsettings.json`:
+### Two Building Blocks
+
+#### 1. Token Configuration (Identity Authorization)
+
+Tokens are in `appsettings.json` under `Authentication:BearerTokens`:
 
 ```json
 {
@@ -10,23 +14,19 @@ Tokens are in `appsettings.json`:
     "BearerTokens": {
       "demo-token-12345": {
         "UserId": "user1",
-        "Roles": ["User"],
-        "AllowedIPs": []
+        "Roles": ["User"]
       },
       "demo-token-67890": {
         "UserId": "user2",
-        "Roles": ["User", "DataReader"],
-        "AllowedIPs": []
+        "Roles": ["User", "DataReader"]
       },
       "partner1-token-xyz": {
         "UserId": "partner1",
-        "Roles": ["Partner1", "DataReader"],
-        "AllowedIPs": ["127.0.0.1", "::1"]
+        "Roles": ["Partner1", "DataReader"]
       },
       "admin-token-123": {
         "UserId": "admin1",
-        "Roles": ["Admin", "DataWriter", "DataReader"],
-        "AllowedIPs": []
+        "Roles": ["Admin", "DataWriter", "DataReader"]
       }
     }
   }
@@ -36,11 +36,47 @@ Tokens are in `appsettings.json`:
 **Properties**:
 - **UserId**: User identifier
 - **Roles**: Array of roles for authorization
-- **AllowedIPs**: IP whitelist (empty = no restrictions)
 
-## Public Endpoints
+#### 2. IP Policy Configuration (IP Authorization)
 
-No authentication needed:
+IP policies are in `appsettings.json` under `Authorization:IpPolicies`:
+
+```json
+{
+  "Authorization": {
+    "IpPolicies": {
+      "AdditionalSameHostIPs": [],
+      "Policies": {
+        "SameHost": {
+          "IncludeSameHost": true,
+          "AllowedIPs": []
+        },
+        "OpenApi": {
+          "IncludeSameHost": true,
+          "AllowedIPs": []
+        },
+        "Partner1": {
+          "IncludeSameHost": false,
+          "AllowedIPs": ["127.0.0.1", "::1"]
+        },
+        "DataWriter": {
+          "IncludeSameHost": false,
+          "AllowedIPs": ["127.0.0.1", "::1"]
+        }
+      }
+    }
+  }
+}
+```
+
+**Key points**:
+- `IncludeSameHost: true` = Auto-populate with localhost + local NIC IPs
+- `AllowedIPs: []` = Additional specific IPs
+- `AdditionalSameHostIPs` = Global IPs to treat as same-host (for hairpin NAT)
+
+## Public Endpoints (No Authorization)
+
+No authentication or IP restrictions:
 
 ```bash
 curl https://localhost:7025/publicweather/weatherforecast
@@ -48,7 +84,9 @@ curl https://localhost:7025/publicweather/weatherforecast
 
 **Expected**: 200 OK with weather data
 
-## Private Endpoints (Bearer Token)
+## Private Endpoints (Identity Only - Bearer Token)
+
+Requires valid token, no IP restrictions.
 
 ### Without Token
 ```bash
@@ -63,7 +101,9 @@ curl -H "Authorization: Bearer demo-token-12345" \
 ```
 **Expected**: 200 OK with weather data
 
-## Partner Endpoints (Role + IP Whitelist)
+## Partner Endpoints (Identity AND IP)
+
+Requires valid token + specific role + IP whitelist match.
 
 ### Without Token
 ```bash
@@ -83,27 +123,47 @@ curl -i -H "Authorization: Bearer demo-token-12345" \
 curl -H "Authorization: Bearer partner1-token-xyz" \
   https://localhost:7025/privateclient1weather/weatherforecast
 ```
-**Expected**: 200 OK (if calling from localhost)
+**Expected**: 200 OK (if calling from 127.0.0.1 or ::1)
+
+### Correct Role + Disallowed IP
+
+Change `Partner1` policy to exclude your IP:
+
+```json
+"Partner1": {
+  "IncludeSameHost": false,
+  "AllowedIPs": ["203.0.113.99"]
+}
+```
+
+Then:
+```bash
+curl -H "Authorization: Bearer partner1-token-xyz" \
+  https://localhost:7025/privateclient1weather/weatherforecast
+```
+**Expected**: 403 Forbidden
 
 ### Different Requirements for GET vs POST
 
-**GET /data** - Requires DataReader role only:
+**GET /data** - Identity only (DataReader role, no IP check):
 ```bash
 curl -H "Authorization: Bearer demo-token-67890" \
   https://localhost:7025/privateclient1weather/data
 ```
 **Expected**: 200 OK
 
-**POST /data** - Requires DataWriter role + IP whitelist:
+**POST /data** - Identity AND IP (DataWriter role + IP whitelist):
 ```bash
 curl -X POST -H "Authorization: Bearer admin-token-123" \
   -H "Content-Type: application/json" \
   -d '{"test": "data"}' \
   https://localhost:7025/privateclient1weather/data
 ```
-**Expected**: 200 OK if IP matches (or AllowedIPs is empty)
+**Expected**: 200 OK (if calling from allowed IP in `DataWriter` policy)
 
-## Same-Host Endpoints
+## Same-Host Endpoints (IP Only - Auto-Populated)
+
+Uses IP authorization with `IncludeSameHost: true` (no token required).
 
 ### From Same Machine
 ```bash
@@ -117,28 +177,109 @@ curl https://your-server:7025/samehostweather/weatherforecast
 ```
 **Expected**: 403 Forbidden
 
-## Same-Host Policy Configuration
+## OpenAPI Endpoint (IP Only - Same-Host OR Specific IPs)
 
-The policy automatically accepts:
-- Loopback: 127.0.0.1, ::1
-- Local NIC IPs: Any IP bound to network interfaces
-
-For cloud/NAT scenarios (AWS EC2, Azure VM):
+Default configuration allows same-host OR specific IPs:
 
 ```json
 {
-  "Authorization": {
-    "SameHostPolicy": {
-      "AdditionalSameHostIPs": ["52.19.108.174"]
+  "OpenApi": {
+    "IncludeSameHost": true,
+    "AllowedIPs": []
+  }
+}
+```
+
+### From Localhost
+```bash
+curl https://localhost:7025/openapi/v1.json
+```
+**Expected**: 200 OK
+
+### Add Specific IP
+```json
+{
+  "OpenApi": {
+    "IncludeSameHost": true,
+    "AllowedIPs": ["203.0.113.10"]
+  }
+}
+```
+Now accessible from localhost **OR** 203.0.113.10 (OR logic built-in!).
+
+### IP Only (Disable Same-Host)
+```json
+{
+  "OpenApi": {
+    "IncludeSameHost": false,
+    "AllowedIPs": ["203.0.113.10", "192.168.1.100"]
+  }
+}
+```
+Only accessible from those two IPs.
+
+## Authorization Pattern Examples
+
+### Pattern 1: IP Only (No Token)
+
+```json
+{
+  "AdminPanel": {
+    "IncludeSameHost": false,
+    "AllowedIPs": ["10.0.0.5"]
+  }
+}
+```
+
+```csharp
+app.MapGet("/admin-panel", () => Results.Ok("Admin panel"))
+   .RequireAuthorization(policy => 
+      policy.Requirements.Add(new IpAuthorizationRequirement("AdminPanel")));
+```
+
+Test:
+```bash
+curl https://localhost:7025/admin-panel
+```
+
+### Pattern 2: Identity Only (No IP)
+
+Already implemented as `DataReaderPolicy`:
+
+```bash
+curl -H "Authorization: Bearer demo-token-67890" \
+  https://localhost:7025/privateclient1weather/data
+```
+
+### Pattern 3: Identity AND IP
+
+Already implemented as `Partner1Policy` and `DataWriterPolicy`.
+
+## Cloud Scenarios
+
+### AWS EC2 with Elastic IP (Hairpin NAT)
+
+If calling the API from the same EC2 instance via its public IP:
+
+```json
+{
+  "IpPolicies": {
+    "AdditionalSameHostIPs": ["52.19.108.174"],
+    "Policies": {
+      "OpenApi": {
+        "IncludeSameHost": true,
+        "AllowedIPs": []
+      }
     }
   }
 }
 ```
 
-**When to use**:
-- Your public IP appears due to hairpin NAT
-- Behind load balancer where same-machine calls show external IP
-- Prefer calling via localhost/private IP if possible
+Now `52.19.108.174` is treated as same-host globally.
+
+### Azure VM with Public IP
+
+Similar configuration if hairpin NAT occurs.
 
 ## Adding Production Tokens
 
@@ -150,8 +291,17 @@ For your remote server, add to `appsettings.Production.json`:
     "BearerTokens": {
       "prod-partner1-a1b2c3": {
         "UserId": "partner1-prod",
-        "Roles": ["Partner1", "DataReader"],
-        "AllowedIPs": ["203.0.113.10", "203.0.113.11"]
+        "Roles": ["Partner1", "DataReader"]
+      }
+    }
+  },
+  "Authorization": {
+    "IpPolicies": {
+      "Policies": {
+        "Partner1": {
+          "IncludeSameHost": false,
+          "AllowedIPs": ["203.0.113.10", "203.0.113.11"]
+        }
       }
     }
   }
@@ -172,14 +322,17 @@ openssl rand -base64 32
 
 ## Security Notes
 
-### Defense-in-Depth
+### Simplified Architecture
 
-Partner endpoints enforce multiple layers:
-1. Valid bearer token
-2. Required role (e.g., Partner1)
-3. IP whitelist (if configured)
+**Two building blocks:**
+- ? **IP Authorization** (includes same-host as special case via `IncludeSameHost`)
+- ? **Identity Authorization** (authentication + roles)
 
-All must pass for access.
+**Benefits:**
+- Same-host is just IP whitelist with auto-population
+- Cleaner mental model (2 concerns instead of 3)
+- Easy to express AND/OR combinations
+- Less code duplication
 
 ### RFC 6750 Compliance
 
@@ -195,40 +348,22 @@ All must pass for access.
 - Add token expiration
 - Implement rate limiting
 - Monitor authentication failures
+- Consider CIDR ranges for IP policies (e.g., `192.168.1.0/24`)
 
 ## Extending This Demo
 
-### Add Rate Limiting
+### Add CIDR Support
+
+For IP ranges instead of individual IPs:
 
 ```csharp
-builder.Services.AddRateLimiter(options => {
-    options.AddFixedWindowLimiter("api-rate-limit", opt => {
-        opt.PermitLimit = 100;
-        opt.Window = TimeSpan.FromMinutes(1);
-    });
-});
-
-// Apply to endpoint
-.RequireRateLimiting("api-rate-limit")
-```
-
-### Migrate to Database
-
-Replace `ConfigurationOpaqueTokenValidator` with a database implementation:
-
-```csharp
-public class DatabaseOpaqueTokenValidator : IOpaqueTokenValidator
+// Add NuGet: System.Net.IPNetwork
+if (IPNetwork.TryParse(allowedIp, out var network))
 {
-    private readonly IDbConnection _db;
-    
-    public async Task<bool> ValidateTokenAsync(string token)
-    {
-        return await _db.QuerySingleOrDefaultAsync<bool>(
-            "SELECT COUNT(*) FROM Tokens WHERE Token = @Token AND ExpiresAt > GETUTCDATE()",
-            new { Token = token });
-    }
-    
-    // ... implement GetTokenConfigurationAsync similarly
+   if (network.Contains(remoteIpAddress))
+   {
+      context.Succeed(requirement);
+   }
 }
 ```
 
@@ -241,15 +376,25 @@ public class TokenConfiguration
 {
     public string UserId { get; set; } = string.Empty;
     public string[] Roles { get; set; } = [];
-    public string[] AllowedIPs { get; set; } = [];
-    public DateTime? ExpiresAt { get; set; }  // Add this
+    public DateTime? ExpiresAt { get; set; }
 }
 ```
 
-Validate in authentication handler:
+Validate in authentication handler.
+
+### Migrate to Database
+
+Replace `ConfigurationOpaqueTokenValidator` with database implementation for production scale.
+
+### Add OR Logic for IP and Identity
+
+Use `IpOrIdentityRequirement` for flexible access:
 
 ```csharp
-if (tokenConfig.ExpiresAt.HasValue && tokenConfig.ExpiresAt.Value < DateTime.UtcNow)
+.AddPolicy("FlexibleAdmin", policy =>
 {
-    return AuthenticateResult.Fail("Token expired");
-}
+    policy.Requirements.Add(new IpOrIdentityRequirement("AdminOffice", "Admin"));
+});
+```
+
+Allows access from office IP **OR** with Admin token.
